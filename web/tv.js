@@ -240,8 +240,25 @@ var TV = (function () {
     return {id: a.id, title: SAMSUNG_TITLES[a.id] || a.name || a.id, icon: icon, color: ''};
   }
 
-  function samsungLaunch(id, done) {
+  function samsungLaunch(id, params, done) {
     try {
+      if (params && params.url && window.tizen && window.tizen.ApplicationControl) {
+        try {
+          var appControl = new window.tizen.ApplicationControl(
+            'http://tizen.org/appcontrol/operation/view',
+            params.url,
+            null,
+            null,
+            null
+          );
+          window.tizen.application.launchAppControl(appControl, id, function () {
+            if (done) done(true);
+          }, function () {
+            window.tizen.application.launch(id, function () { if (done) done(true); }, function () { if (done) done(false); });
+          });
+          return;
+        } catch (eControl) {}
+      }
       window.tizen.application.launch(id, function () { if (done) done(true); }, function () { if (done) done(false); });
     } catch (e) {
       if (done) done(false);
@@ -365,14 +382,26 @@ var TV = (function () {
     launch: function (id, params, done) {
       if (samsung) {
         if (id.indexOf('source:') === 0) samsungSource(id, done);
-        else samsungLaunch(id, done);
+        else samsungLaunch(id, params, done);
         return;
       }
       if (!webos) {
+        if (params && params.url) {
+          try { window.open(params.url, '_blank'); } catch (e) {}
+        }
         if (done) setTimeout(function () { done(true); }, 0);
         return;
       }
-      luna('luna://com.webos.applicationManager/launch', params ? {id: id, params: params} : {id: id}, function (res) {
+      var p = null;
+      if (params && params.url) {
+        p = {
+          target: params.url,
+          query: params.url,
+          contentTarget: params.url,
+          contentId: params.url
+        };
+      }
+      luna('luna://com.webos.applicationManager/launch', p ? {id: id, params: p} : {id: id}, function (res) {
         if (done) done(!!res);
       });
     },

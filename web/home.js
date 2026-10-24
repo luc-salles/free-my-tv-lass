@@ -107,7 +107,16 @@
   // Android app does with the TV art, the logo is lifted off it once: the background goes transparent and the rest is
   // cropped to the logo, which then fills the tile on the brand's color.
   var lifted = {};   // icon url -> {src, bg: [r, g, b], ink: luminance histogram} or false (keep the icon as it is)
-  var LIFT_SIZE = 240;
+  try {
+    var storedLifted = JSON.parse(localStorage.getItem('fmtv.lifted') || '{}');
+    if (storedLifted && typeof storedLifted === 'object') lifted = storedLifted;
+  } catch (e) {}
+
+  function saveLifted() {
+    try { localStorage.setItem('fmtv.lifted', JSON.stringify(lifted)); } catch (e) {}
+  }
+
+  var LIFT_SIZE = 120;
 
   // sRGB (0-255) to linear light, computed once: lift() needs it for every pixel, and old TVs are slow at Math.pow.
   var LINEAR = [];
@@ -251,7 +260,10 @@
       if (lifted[url] !== false) {
         img.onload = function () {
           img.onload = null;
-          if (lifted[url] === undefined) lifted[url] = lift(img);
+          if (lifted[url] === undefined) {
+            lifted[url] = lift(img);
+            saveLifted();
+          }
           if (lifted[url]) showLogo(img, box, top, bottom, lifted[url], !k);
         };
       }
@@ -296,11 +308,11 @@
 
   // MARK: - Focus
 
-  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', ROWS: 'rows', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang'};
-  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, streamRow: 0, streamCol: 0, rowCols: [], drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, drawerOpen: false};
+  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', ROWS: 'rows', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang', SAVER_MENU: 'savermenu'};
+  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, streamRow: 0, streamCol: 0, rowCols: [], drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, saverRow: 0, drawerOpen: false};
   var cards = [];
 
-  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG; }
+  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG || st.zone === Z.SAVER_MENU; }
 
   function updateFocus() {
     var i, list;
@@ -317,48 +329,59 @@
     list = $('tiles').children;
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.SHELF && st.shelf === i);
     revealShelf();
-    list = document.querySelectorAll('#drawer .key');
-    for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.DRAWER && st.drawer === i);
+    if (st.drawerOpen || st.zone === Z.ROWS || st.zone === Z.DRAWER) {
+      list = document.querySelectorAll('#drawer .key');
+      for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.DRAWER && st.drawer === i);
 
-    var sRows = Data.serviceRows ? Data.serviceRows() : [];
-    var sRowNodes = document.querySelectorAll('.stream-row');
-    for (var rIdx = 0; rIdx < sRowNodes.length; rIdx++) {
-      var track = sRowNodes[rIdx].querySelector('.stream-track');
-      var cNodes = sRowNodes[rIdx].querySelectorAll('.stream-card');
-      var isCurRow = st.zone === Z.ROWS && st.streamRow === rIdx;
-      var curCol = isCurRow ? st.streamCol : (st.rowCols[rIdx] || 0);
-      for (var cIdx = 0; cIdx < cNodes.length; cIdx++) {
-        var isFocus = isCurRow && st.streamCol === cIdx;
-        setClass(cNodes[cIdx], 'focus', isFocus);
-        if (isFocus) {
-          var item = sRows[rIdx] && sRows[rIdx].items[cIdx];
-          if (item && item.backdrop) backdrop(Data.image(item.backdrop, 'w300'));
+      var sRows = Data.serviceRows ? Data.serviceRows() : [];
+      for (var rIdx = 0; rIdx < streamDomRows.length; rIdx++) {
+        var rowData = streamDomRows[rIdx];
+        var track = rowData.track;
+        var cNodes = rowData.cards;
+        var isCurRow = st.zone === Z.ROWS && st.streamRow === rIdx;
+        var curCol = isCurRow ? st.streamCol : (st.rowCols[rIdx] || 0);
+        for (var cIdx = 0; cIdx < cNodes.length; cIdx++) {
+          var isFocus = isCurRow && st.streamCol === cIdx;
+          setClass(cNodes[cIdx], 'focus', isFocus);
+          if (isFocus) {
+            var item = sRows[rIdx] && sRows[rIdx].items[cIdx];
+            if (item && item.backdrop) scheduleBackdrop(Data.image(item.backdrop, 'w300'));
+          }
+        }
+        if (track) {
+          var colShift = Math.max(0, curCol - 1);
+          track.style.webkitTransform = track.style.transform = 'translateX(' + (-colShift * 340) + 'px)';
         }
       }
-      if (track) {
-        var colShift = Math.max(0, curCol - 1);
-        track.style.webkitTransform = track.style.transform = 'translateX(' + (-colShift * 340) + 'px)';
+      var scrollContainer = $('drawer-scroll');
+      if (scrollContainer) {
+        var vShift = 0;
+        if (st.zone === Z.ROWS) {
+          vShift = Math.max(0, st.streamRow * 250);
+        } else if (st.zone === Z.DRAWER) {
+          vShift = Math.max(0, sRows.length * 250);
+        }
+        scrollContainer.style.webkitTransform = scrollContainer.style.transform = 'translateY(' + (-vShift) + 'px)';
       }
-    }
-    var scrollContainer = $('drawer-scroll');
-    if (scrollContainer) {
-      var vShift = 0;
-      if (st.zone === Z.ROWS) {
-        vShift = Math.max(0, (st.streamRow - 1) * 250);
-      } else if (st.zone === Z.DRAWER) {
-        vShift = Math.max(0, sRows.length * 250 - 30);
-      }
-      scrollContainer.style.webkitTransform = scrollContainer.style.transform = 'translateY(' + (-vShift) + 'px)';
     }
 
-    list = document.querySelectorAll('#apps .cell');
-    for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.APPS && st.grid === i);
-    var rows = Math.max(1, Math.ceil(others.length / 5)), r = Math.floor(st.grid / 5), first = Math.max(0, Math.min(rows - 3, r - 1));
-    $('apps').lastChild.style.webkitTransform = $('apps').lastChild.style.transform = 'translateY(' + (-first * 239) + 'px)';
-    focusRows($('settings'), st.row, st.zone === Z.SETTINGS);
-    focusRows($('shelfedit'), st.edit, st.zone === Z.EDIT);
-    focusRows($('langpick'), st.lang, st.zone === Z.LANG);
-    if (langHint) langHint.textContent = (st.lang + 1) + ' / ' + languageChoices().length + '  ·  ' + tr('OK picks, Back cancels.');
+    if (sheetOpen()) {
+      if (st.zone === Z.APPS) {
+        list = document.querySelectorAll('#apps .cell');
+        for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.APPS && st.grid === i);
+        var rows = Math.max(1, Math.ceil(others.length / 5)), r = Math.floor(st.grid / 5), first = Math.max(0, Math.min(rows - 3, r - 1));
+        $('apps').lastChild.style.webkitTransform = $('apps').lastChild.style.transform = 'translateY(' + (-first * 239) + 'px)';
+      } else if (st.zone === Z.SETTINGS) {
+        focusRows($('settings'), st.row, true);
+      } else if (st.zone === Z.EDIT) {
+        focusRows($('shelfedit'), st.edit, true);
+      } else if (st.zone === Z.LANG) {
+        focusRows($('langpick'), st.lang, true);
+        if (langHint) langHint.textContent = (st.lang + 1) + ' / ' + languageChoices().length + '  ·  ' + tr('OK picks, Back cancels.');
+      } else if (st.zone === Z.SAVER_MENU) {
+        focusRows($('screensaver-menu'), st.saverRow, true);
+      }
+    }
     setClass(body, 'drawer-open', !!st.drawerOpen);
   }
 
@@ -438,7 +461,7 @@
       card.style.left = rects[c][0] + 'px';
       card.style.width = rects[c][1] + 'px';
       var img = el('div', 'img', card);
-      img.style.backgroundImage = 'url(' + Data.image(p.backdrop, c === 0 ? 'w1280' : 'w780') + ')';
+      img.style.backgroundImage = 'url(' + Data.image(p.backdrop, c === 0 ? 'w1280' : 'w500') + ')';
       el('div', 'name', card, p.title);
       if (c === 0 && p.meta) el('div', 'meta', card, p.meta);
       hover(card, Z.CARDS, c);
@@ -449,7 +472,14 @@
     updateFocus();
   }
 
-  var bgUrl = null, bgFront = 'bgA';
+  var bgUrl = null, bgFront = 'bgA', backdropTimer = null;
+
+  function scheduleBackdrop(url) {
+    if (backdropTimer) clearTimeout(backdropTimer);
+    backdropTimer = setTimeout(function () {
+      backdrop(url);
+    }, 180);
+  }
 
   /** The first pick's photo as the background: drawn tiny and stretched, it's already as soft as a heavy blur. */
   function backdrop(url) {
@@ -554,10 +584,12 @@
   // MARK: - Drawer
 
   var drawerItems = [], drawerInputs = 0;
+  var streamDomRows = [];
 
   function renderDrawer() {
     var d = $('drawer');
     d.innerHTML = '';
+    streamDomRows = [];
     var scroll = el('div', 'drawer-scroll', d);
     scroll.id = 'drawer-scroll';
 
@@ -571,12 +603,14 @@
         sRow.style.top = (r * 250) + 'px';
         el('div', 'stream-header', sRow, rowObj.title);
         var track = el('div', 'stream-track', sRow);
+        var rowCards = [];
         for (var c = 0; c < rowObj.items.length; c++) {
           var it = rowObj.items[c];
           var card = el('div', 'stream-card', track);
-          card.style.backgroundImage = 'url(' + Data.image(it.backdrop, 'w780') + ')';
+          card.style.backgroundImage = 'url(' + Data.image(it.backdrop, 'w300') + ')';
           el('div', 'stream-veil', card);
           el('div', 'stream-name', card, it.title);
+          rowCards.push(card);
           (function (rIdx, cIdx) {
             card.onmouseover = function () {
               st.drawerOpen = true;
@@ -597,6 +631,7 @@
             };
           })(r, c);
         }
+        streamDomRows.push({row: sRow, track: track, cards: rowCards});
       }
     }
 
@@ -752,6 +787,7 @@
     setClass($('settings'), 'open', false);
     setClass($('shelfedit'), 'open', false);
     setClass($('langpick'), 'open', false);
+    setClass($('screensaver-menu'), 'open', false);
     langHint = null;
     st.zone = Z.SHELF;
     updateFocus();
@@ -782,6 +818,7 @@
           step: function () { if (Prefs.quotes()) { Prefs.setCoin(i, !Prefs.coin(i)); Data.settingsChanged(); } }});
       })(i);
     }
+    rows.push({label: gd('Screensaver'), value: '›', step: function (d) { if (d >= 0) openScreensaverMenu(); }});
     rows.push({label: tr('Shelf'), value: '›', step: function (d) { if (d >= 0) openShelfEdit(); }});
     rows.push({label: tr('TV Settings'), value: '›', step: function (d) { if (d >= 0) tvSettings(); }});
     return rows;
@@ -938,11 +975,110 @@
     renderShelfEdit();
   }
 
+  // MARK: - Screensaver menu (photos from a Google Drive folder)
+
+  var saverRowsNow = [];
+
+  function gd(text) { return window.GoogleDrive ? GoogleDrive.t(text) : text; }
+
+  function screensaverRows() {
+    var ready = window.GoogleDrive && GoogleDrive.isConfigured();
+    var source = ready ? GoogleDrive.getSource() : 'default';
+    var rows = [{
+      label: gd('Screensaver Source'),
+      value: source === 'gdrive' ? gd('Google Drive') : gd('Default (Picks)'),
+      dim: !ready,
+      step: function () {
+        if (!ready) { toast(gd('Add gdrive_folder_id and gdrive_api_key to config.properties.')); return; }
+        GoogleDrive.setSource(source === 'gdrive' ? 'default' : 'gdrive');
+        renderScreensaverMenu();
+      }
+    }];
+    if (ready) {
+      var n = GoogleDrive.count(), err = GoogleDrive.getLastError();
+      rows.push({label: gd('Photos in folder'), value: err ? err : n < 0 ? gd('Loading...') : String(n), dim: true, step: function () {}});
+      rows.push({label: gd('Reload photos'), value: '›', step: function () {
+        GoogleDrive.reload(function (e) {
+          toast(e ? e.message : gd('Photos reloaded') + ': ' + GoogleDrive.count());
+          if (st.zone === Z.SAVER_MENU) renderScreensaverMenu();
+        });
+        renderScreensaverMenu();
+      }});
+      if (n < 0 && !err) GoogleDrive.load(function () { if (st.zone === Z.SAVER_MENU) renderScreensaverMenu(); });
+    } else {
+      rows.push({label: gd('Google Drive'), value: gd('Not configured'), dim: true, step: function () {}});
+    }
+    rows.push({label: gd('Screensaver') + ' (Preview)', value: '›', step: function () { showSaver(); }});
+    return rows;
+  }
+
+  function renderScreensaverMenu() {
+    var box = $('screensaver-menu').firstChild;
+    box.innerHTML = '';
+    var title = el('div', 'title', box);
+    sym('settings', title);
+    title.appendChild(document.createTextNode(gd('Screensaver')));
+    var list = el('div', 'list', box), holder = el('div', 'rows', list);
+    saverRowsNow = screensaverRows();
+    if (st.saverRow >= saverRowsNow.length) st.saverRow = saverRowsNow.length - 1;
+    list.style.height = Math.min(saverRowsNow.length, 7) * 78 + 'px';
+    for (var i = 0; i < saverRowsNow.length; i++) {
+      var r = saverRowsNow[i], row = el('div', 'row' + (r.dim ? ' dim' : ''), holder, r.label);
+      var v = el('span', 'value', row);
+      if (r.value === '›') v.textContent = '›';
+      else {
+        el('span', 'chev', v, '‹');
+        v.appendChild(document.createTextNode(r.value));
+        el('span', 'chev', v, '›');
+      }
+      hover(row, Z.SAVER_MENU, i);
+    }
+    el('div', 'hint', box, tr('OK or the arrows change the value.'));
+    updateFocus();
+  }
+
+  function openScreensaverMenu() {
+    setClass($('settings'), 'open', false);
+    st.zone = Z.SAVER_MENU;
+    st.saverRow = 0;
+    renderScreensaverMenu();
+    setClass($('screensaver-menu'), 'open', true);
+    updateFocus();
+  }
+
+  function closeScreensaverMenu() {
+    setClass($('screensaver-menu'), 'open', false);
+    openSettings();
+    for (var i = 0; i < rowsNow.length; i++) {
+      if (rowsNow[i].label === gd('Screensaver')) st.row = i;
+    }
+    updateFocus();
+  }
+
   // MARK: - Opening things
 
-  function launcher(id, name) {
+  function getStreamUrl(serviceKey, title) {
+    if (!title) return null;
+    var q = encodeURIComponent(title);
+    var key = (serviceKey || '').toLowerCase();
+    if (key === 'netflix') return 'https://www.netflix.com/search?q=' + q;
+    if (key === 'prime' || key === 'amazon') return 'https://www.primevideo.com/search/ref=atv_nb_sr?phrase=' + q;
+    if (key === 'disney') return 'https://www.disneyplus.com/search?q=' + q;
+    if (key === 'max' || key === 'hbo') return 'https://www.max.com/search?q=' + q;
+    if (key === 'globoplay') return 'https://globoplay.globo.com/busca/?q=' + q;
+    if (key === 'paramount') return 'https://www.paramountplus.com/search/?q=' + q;
+    if (key === 'appletv' || key === 'apple') return 'https://tv.apple.com/search?term=' + q;
+    if (key === 'youtube') return 'https://www.youtube.com/results?search_query=' + q;
+    if (key === 'crunchyroll') return 'https://www.crunchyroll.com/search?q=' + q;
+    if (key === 'hulu') return 'https://www.hulu.com/search?q=' + q;
+    if (key === 'peacock') return 'https://www.peacocktv.com/search?q=' + q;
+    if (key === 'hotstar') return 'https://www.hotstar.com/in/explore?search_query=' + q;
+    return null;
+  }
+
+  function launcher(id, name, params) {
     return function () {
-      TV.launch(id, null, function (ok) {
+      TV.launch(id, params || null, function (ok) {
         if (!ok) toast(trf("Couldn't open {app}.", {app: name || id}));
       });
     };
@@ -969,7 +1105,13 @@
         return;
       case Z.CARDS:
         var p = cards[st.card], app = p && Data.appFor(p.app);
-        if (app) launcher(app.id, app.title)();
+        var cUrl = p ? getStreamUrl(p.app, p.title) : null;
+        var cardParams = cUrl ? {url: cUrl, title: p.title} : null;
+        if (app) {
+          launcher(app.id, app.title, cardParams)();
+        } else if (cardParams && TV.name === 'browser') {
+          TV.launch(p.app, cardParams);
+        }
         return;
       case Z.SHELF:
         if (shelf[st.shelf]) launcher(shelf[st.shelf].id, shelf[st.shelf].title)();
@@ -979,7 +1121,15 @@
         if (sRows[st.streamRow]) {
           var rItem = sRows[st.streamRow].items[st.streamCol];
           var appObj = sRows[st.streamRow].app || (rItem && Data.appFor(rItem.app));
-          if (appObj) launcher(appObj.id, appObj.title)();
+          var servKey = (rItem && rItem.app) || sRows[st.streamRow].key;
+          var itemTitle = rItem ? rItem.title : '';
+          var sUrl = getStreamUrl(servKey, itemTitle);
+          var streamParams = sUrl ? {url: sUrl, title: itemTitle} : null;
+          if (appObj) {
+            launcher(appObj.id, appObj.title, streamParams)();
+          } else if (streamParams && TV.name === 'browser') {
+            TV.launch(servKey, streamParams);
+          }
         }
         return;
       case Z.DRAWER:
@@ -990,6 +1140,9 @@
         return;
       case Z.SETTINGS:
         if (rowsNow[st.row]) { rowsNow[st.row].step(1); if (st.zone === Z.SETTINGS) renderSettings(); }
+        return;
+      case Z.SAVER_MENU:
+        if (saverRowsNow[st.saverRow]) { saverRowsNow[st.saverRow].step(1); if (st.zone === Z.SAVER_MENU) renderScreensaverMenu(); }
         return;
       case Z.EDIT:
         editShelf(0);
@@ -1104,6 +1257,13 @@
           if (r.value !== '›') { r.step(dx); if (st.zone === Z.SETTINGS) renderSettings(); }
         }
         break;
+      case Z.SAVER_MENU:
+        if (dy) st.saverRow = Math.max(0, Math.min(saverRowsNow.length - 1, st.saverRow + dy));
+        else if (dx && saverRowsNow[st.saverRow]) {
+          var sr = saverRowsNow[st.saverRow];
+          if (sr.value !== '›') { sr.step(dx); if (st.zone === Z.SAVER_MENU) renderScreensaverMenu(); }
+        }
+        break;
       case Z.EDIT:
         if (dy) st.edit = Math.max(0, Math.min(apps.length - 1, st.edit + dy));
         else if (dx) editShelf(dx);
@@ -1116,6 +1276,7 @@
   }
 
   function back() {
+    if (st.zone === Z.SAVER_MENU) { closeScreensaverMenu(); return; }
     if (st.zone === Z.EDIT) { setClass($('shelfedit'), 'open', false); openSettings(); st.row = rowsNow.length - 2; updateFocus(); return; }
     if (st.zone === Z.LANG) { closeLanguages(false); return; }
     if (sheetOpen()) { closeSheets(); return; }
@@ -1127,7 +1288,7 @@
   /** The pointer focuses what it's over (the Magic Remote, or a mouse when previewing). */
   function hover(node, zone, index) {
     node.onmouseover = function () {
-      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG))) return;
+      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG || zone === Z.SAVER_MENU))) return;
       if (zone === Z.DRAWER && !st.drawerOpen) return;
       st.zone = zone;
       if (zone === Z.TOP) { st.top = index; if (index < 3) selectTab(index); }
@@ -1136,6 +1297,7 @@
       else if (zone === Z.DRAWER) st.drawer = index;
       else if (zone === Z.APPS) st.grid = index;
       else if (zone === Z.SETTINGS) st.row = index;
+      else if (zone === Z.SAVER_MENU) st.saverRow = index;
       else if (zone === Z.EDIT) st.edit = index;
       else if (zone === Z.LANG) st.lang = index;
       updateFocus();
@@ -1186,24 +1348,49 @@
     el('div', 'date', clock);
     el('div', 'title', clock);
     var front = a;
-    function next() {
-      if (!saverOn) return;
-      var p = photos.length ? photos[saverIndex++ % photos.length] : null;
+
+    function renderSlide(imgUrl, titleText) {
       var back = front === a ? b : a;
-      if (p) {
-        back.style.backgroundImage = 'url(' + Data.image(p.backdrop, 'original') + ')';
-        back.style.webkitTransform = back.style.transform = 'scale(1.0)';
-        clock.lastChild.textContent = p.title;
-        setTimeout(function () {
-          setClass(back, 'on', true);
-          setClass(front, 'on', false);
-          back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
-          front = back;
-        }, 60);
-      }
+      back.style.backgroundImage = 'url(' + imgUrl + ')';
+      back.style.webkitTransform = back.style.transform = 'scale(1.0)';
+      clock.lastChild.textContent = titleText || '';
+      setTimeout(function () {
+        if (!saverOn) return;
+        setClass(back, 'on', true);
+        setClass(front, 'on', false);
+        back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
+        front = back;
+        scheduleNext();
+      }, 60);
+    }
+
+    function fallbackNext() {
+      var p = photos.length ? photos[saverIndex++ % photos.length] : null;
+      if (p) renderSlide(Data.image(p.backdrop, 'original'), p.title);
+      else scheduleNext();
+    }
+
+    function scheduleNext() {
       tickSaverClock(clock);
       saverTimer = setTimeout(next, 12000);
     }
+
+    function next() {
+      if (!saverOn) return;
+      if (window.GoogleDrive && GoogleDrive.getSource() === 'gdrive') {
+        GoogleDrive.getNextPhoto(function (photo) {
+          if (!saverOn) return;
+          if (photo && photo.url) {
+            renderSlide(photo.url, photo.title || '');
+          } else {
+            fallbackNext();
+          }
+        });
+      } else {
+        fallbackNext();
+      }
+    }
+
     setClass(s, 'on', true);
     next();
   }
@@ -1367,8 +1554,10 @@
 
   I18N.set(Prefs.language());
   checkNight();   // now, from the last forecast: not after the TV lists its apps, with the day look until then
-  // LG's screensaver waits only when ours will show: not under a sheet (ours waits there), and not without photos.
-  TV.holdScreenSaver(function () { return !sheetOpen() && saverPhotos().length > 0; });
+  TV.holdScreenSaver(function () {
+    var hasDrive = window.GoogleDrive && GoogleDrive.getSource() === 'gdrive';
+    return !sheetOpen() && (saverPhotos().length > 0 || hasDrive);
+  });
   fit();
   renderTop();
   tickClock();
