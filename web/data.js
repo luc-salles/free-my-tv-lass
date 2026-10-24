@@ -124,7 +124,7 @@ var Data = (function () {
 
   function refreshWeather() {
     var now = Date.now();
-    if (fetchingWeather || (now - weatherAt < 30 * 60000 && now >= weatherAt)) return;
+    if (fetchingWeather || (now - weatherAt < 60 * 60000 && now >= weatherAt)) return;
     fetchingWeather = true;
     var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + Place.lat + '&longitude=' + Place.lon
         + '&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset'
@@ -185,7 +185,7 @@ var Data = (function () {
 
   function refreshPrices() {
     var coins = activeCoins(), now = Date.now();
-    if (!coins.length || fetchingPrices || (now - pricesAt < 5 * 60000 && now >= pricesAt)) return;
+    if (!coins.length || fetchingPrices || (now - pricesAt < 15 * 60000 && now >= pricesAt)) return;
     fetchingPrices = true;
     var symbols = coins.map(function (i) { return '%22' + COINS[i] + QUOTE + '%22'; }).join(',');
     var path = '/api/v3/ticker/24hr?type=MINI&symbols=%5B' + symbols + '%5D';
@@ -263,9 +263,10 @@ var Data = (function () {
 
   var cache = stored('recs') || {};
   var picks = cache.picks || [], listAt = cache.listAt || 0, period = cache.period, listLang = cache.lang || '', stamp = cache.stamp || '';
+  var serviceRowsData = cache.serviceRows || {};
   var fetchingRecs = false, failedAt = 0, recsError = '';
 
-  function saveRecs() { store('recs', {picks: picks, listAt: listAt, period: period, lang: listLang, stamp: stamp}); }
+  function saveRecs() { store('recs', {picks: picks, listAt: listAt, period: period, lang: listLang, stamp: stamp, serviceRows: serviceRowsData}); }
 
   function hourPeriod(d) {
     var h = d.getHours();
@@ -411,22 +412,27 @@ var Data = (function () {
     }
   }
 
-  /** Runs fn on each item one after the other (the TV's network is shared with what's playing). */
+  /** Runs fn on each item one after the other, with 120ms pause between requests to keep the TV UI 100% responsive. */
   function each(items, fn, done) {
     var i = 0;
     (function next() {
       if (i >= items.length) { done(); return; }
-      fn(items[i++], next);
+      fn(items[i++], function () {
+        setTimeout(next, 120);
+      });
     })();
   }
 
   function fetchList(done) {
     tmdb('/watch/providers/movie?language=' + lang() + '&watch_region=' + REGION, function (err, res) {
       if (err) { done(err); return; }
-      var ids = [];
+      var ids = [], provList = [];
       for (var i = 0; res.results && i < res.results.length; i++) {
         var s = service(res.results[i].provider_name, res.results[i].provider_id);
-        if (s && appFor(s[1])) ids.push(res.results[i].provider_id);
+        if (s && appFor(s[1])) {
+          ids.push(res.results[i].provider_id);
+          provList.push({key: s[1], id: res.results[i].provider_id});
+        }
       }
       if (!ids.length) { done(new Error("none of the TV's streaming apps are on TMDB")); return; }
       var common = '&language=' + lang() + '&watch_region=' + REGION + '&with_watch_monetization_types=flatrate&include_adult=false'
@@ -452,22 +458,66 @@ var Data = (function () {
             alternate(list, seen, fresh.movie, fresh.tv, 24);
             if (!list.length) { done(new Error('TMDB returned no recommendations')); return; }
             picks = list;
-            done(null);
+            each(provList, function (pItem, nextProv) {
+              var u = '/discover/movie?vote_count.gte=10&sort_by=popularity.desc&watch_region=' + REGION
+                  + '&with_watch_monetization_types=flatrate&include_adult=false&with_watch_providers=' + pItem.id
+                  + '&language=' + lang() + (CONFIG.hideAnimation ? '&without_genres=' + ANIMATION : '');
+              tmdb(u, function (eP, rP) {
+                if (!eP && rP && rP.results) {
+                  var rowItems = [];
+                  for (var m = 0; m < rP.results.length && rowItems.length < 10; m++) {
+                    var it = rP.results[m];
+                    if (it.backdrop_path) {
+                      rowItems.push({
+                        id: it.id,
+                        kind: 'movie',
+                        title: it.title || it.name,
+                        backdrop: it.backdrop_path,
+                        app: pItem.key
+                      });
+                    }
+                  }
+                  if (rowItems.length) serviceRowsData[pItem.key] = rowItems;
+                }
+                nextProv();
+              });
+            }, function () {
+              saveRecs();
+              done(null);
+            });
           });
         });
       });
     });
   }
 
-  /** Fetches the list when stale (6 h, a new period of the day, language, key or apps), then this hour's details. */
+  /** Checks if the cached catalog was fetched before today's 3:00 AM cutoff. */
+  function isDailyCacheStale(cachedAt) {
+    if (!cachedAt) return true;
+    var now = new Date();
+    // 3:00 AM cutoff today
+    var cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 3, 0, 0, 0).getTime();
+    if (now.getTime() < cutoff) {
+      // Between midnight and 3:00 AM: the cutoff was yesterday's 3:00 AM
+      cutoff -= 24 * 3600000;
+    }
+    return cachedAt < cutoff;
+  }
+
+  /**
+   * Fetches the TMDB catalog only once a day at 3:00 AM (or if cache is empty / settings changed).
+   * Otherwise, the app uses the instant local cache and performs ZERO network requests!
+   */
   function refreshRecs() {
     if (!KEY || fetchingRecs || !installed.length) return;
-    var t = Date.now(), p = hourPeriod(new Date()), st = sourceStamp();
-    if (st === stamp && failedAt && t - failedAt < 10 * 60000 && t >= failedAt) return;
-    var stale = st !== stamp || p !== period || t - listAt > 6 * 3600000 || t < listAt || !picks.length || listLang !== I18N.lang;
-    var wanted = all(), missing = false;
-    for (var i = 0; i < wanted.length; i++) missing = missing || !wanted[i].detailed;
-    if (!stale && !missing) return;
+    var t = Date.now(), st = sourceStamp();
+    if (st === stamp && failedAt && t - failedAt < 15 * 60000 && t >= failedAt) return;
+    var hasRows = false;
+    for (var k in serviceRowsData) {
+      if (serviceRowsData.hasOwnProperty(k) && serviceRowsData[k].length) { hasRows = true; break; }
+    }
+    var stale = st !== stamp || !picks.length || !hasRows || listLang !== I18N.lang || isDailyCacheStale(listAt);
+    if (!stale) return; // Cache is valid until 3:00 AM tomorrow!
     fetchingRecs = true;
     stamp = st;
     function finish(err) {
@@ -476,21 +526,13 @@ var Data = (function () {
       saveRecs();
       changed();
     }
-    function detailWanted() {
+    fetchList(function (err) {
+      if (err) { finish(err); return; }
+      listAt = Date.now();
+      listLang = I18N.lang;
       var todo = all().filter(function (x) { return !x.detailed; });
       each(todo, function (x, next) { details(x, function () { next(); }); }, function () { finish(null); });
-    }
-    if (stale) {
-      fetchList(function (err) {
-        if (err) { finish(err); return; }
-        listAt = Date.now();
-        period = p;
-        listLang = I18N.lang;
-        detailWanted();
-      });
-    } else {
-      detailWanted();
-    }
+    });
   }
 
   /** This hour's picks for the three tabs, without repeats (the screensaver shows them too). */
@@ -530,6 +572,21 @@ var Data = (function () {
     recsError: function () { return recsError; },
     picks: now,
     showcase: all,
+    serviceRows: function () {
+      var rows = [];
+      for (var i = 0; i < SERVICES.length; i++) {
+        var s = SERVICES[i], key = s[1], app = appFor(key);
+        if (!app) continue;
+        var list = serviceRowsData[key] || [];
+        if (!list.length) {
+          list = picks.filter(function (x) { return x.app === key && x.backdrop; });
+        }
+        if (list.length) {
+          rows.push({key: key, title: s[4], app: app, items: list});
+        }
+      }
+      return rows;
+    },
     image: function (path, size) { return path ? 'https://image.tmdb.org/t/p/' + (size || 'w1280') + path : ''; },
 
     /** Night at the location: from sunset to sunrise (the last forecast; without one, 6:00 and 18:00). */

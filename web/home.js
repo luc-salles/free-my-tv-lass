@@ -55,6 +55,10 @@
   /** The 1920 × 1080 stage fills the window (on the TV it already is 1920 × 1080). */
   function fit() {
     var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    var left = Math.round((window.innerWidth - 1920 * s) / 2);
+    var top = Math.round((window.innerHeight - 1080 * s) / 2);
+    stage.style.left = left + 'px';
+    stage.style.top = top + 'px';
     stage.style.webkitTransform = stage.style.transform = s === 1 ? '' : 'scale(' + s + ')';
   }
 
@@ -292,8 +296,8 @@
 
   // MARK: - Focus
 
-  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang'};
-  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, drawer: 0, grid: 0, row: 0, edit: 0, lang: 0};
+  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', ROWS: 'rows', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang'};
+  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, streamRow: 0, streamCol: 0, rowCols: [], drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, drawerOpen: false};
   var cards = [];
 
   function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG; }
@@ -315,6 +319,38 @@
     revealShelf();
     list = document.querySelectorAll('#drawer .key');
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.DRAWER && st.drawer === i);
+
+    var sRows = Data.serviceRows ? Data.serviceRows() : [];
+    var sRowNodes = document.querySelectorAll('.stream-row');
+    for (var rIdx = 0; rIdx < sRowNodes.length; rIdx++) {
+      var track = sRowNodes[rIdx].querySelector('.stream-track');
+      var cNodes = sRowNodes[rIdx].querySelectorAll('.stream-card');
+      var isCurRow = st.zone === Z.ROWS && st.streamRow === rIdx;
+      var curCol = isCurRow ? st.streamCol : (st.rowCols[rIdx] || 0);
+      for (var cIdx = 0; cIdx < cNodes.length; cIdx++) {
+        var isFocus = isCurRow && st.streamCol === cIdx;
+        setClass(cNodes[cIdx], 'focus', isFocus);
+        if (isFocus) {
+          var item = sRows[rIdx] && sRows[rIdx].items[cIdx];
+          if (item && item.backdrop) backdrop(Data.image(item.backdrop, 'w300'));
+        }
+      }
+      if (track) {
+        var colShift = Math.max(0, curCol - 1);
+        track.style.webkitTransform = track.style.transform = 'translateX(' + (-colShift * 340) + 'px)';
+      }
+    }
+    var scrollContainer = $('drawer-scroll');
+    if (scrollContainer) {
+      var vShift = 0;
+      if (st.zone === Z.ROWS) {
+        vShift = Math.max(0, (st.streamRow - 1) * 250);
+      } else if (st.zone === Z.DRAWER) {
+        vShift = Math.max(0, sRows.length * 250 - 30);
+      }
+      scrollContainer.style.webkitTransform = scrollContainer.style.transform = 'translateY(' + (-vShift) + 'px)';
+    }
+
     list = document.querySelectorAll('#apps .cell');
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.APPS && st.grid === i);
     var rows = Math.max(1, Math.ceil(others.length / 5)), r = Math.floor(st.grid / 5), first = Math.max(0, Math.min(rows - 3, r - 1));
@@ -323,7 +359,7 @@
     focusRows($('shelfedit'), st.edit, st.zone === Z.EDIT);
     focusRows($('langpick'), st.lang, st.zone === Z.LANG);
     if (langHint) langHint.textContent = (st.lang + 1) + ' / ' + languageChoices().length + '  ·  ' + tr('OK picks, Back cancels.');
-    setClass(body, 'drawer-open', st.zone === Z.DRAWER);
+    setClass(body, 'drawer-open', !!st.drawerOpen);
   }
 
   function focusRows(sheet, index, on) {
@@ -522,6 +558,55 @@
   function renderDrawer() {
     var d = $('drawer');
     d.innerHTML = '';
+    var scroll = el('div', 'drawer-scroll', d);
+    scroll.id = 'drawer-scroll';
+
+    var sRows = Data.serviceRows ? Data.serviceRows() : [];
+    if (sRows.length) {
+      var streams = el('div', 'streams-holder', scroll);
+      streams.id = 'streams';
+      for (var r = 0; r < sRows.length; r++) {
+        var rowObj = sRows[r];
+        var sRow = el('div', 'stream-row', streams);
+        sRow.style.top = (r * 250) + 'px';
+        el('div', 'stream-header', sRow, rowObj.title);
+        var track = el('div', 'stream-track', sRow);
+        for (var c = 0; c < rowObj.items.length; c++) {
+          var it = rowObj.items[c];
+          var card = el('div', 'stream-card', track);
+          card.style.backgroundImage = 'url(' + Data.image(it.backdrop, 'w780') + ')';
+          el('div', 'stream-veil', card);
+          el('div', 'stream-name', card, it.title);
+          (function (rIdx, cIdx) {
+            card.onmouseover = function () {
+              st.drawerOpen = true;
+              st.zone = Z.ROWS;
+              st.streamRow = rIdx;
+              st.streamCol = cIdx;
+              st.rowCols[rIdx] = cIdx;
+              updateFocus();
+            };
+            card.onclick = function () {
+              st.drawerOpen = true;
+              st.zone = Z.ROWS;
+              st.streamRow = rIdx;
+              st.streamCol = cIdx;
+              st.rowCols[rIdx] = cIdx;
+              updateFocus();
+              activate();
+            };
+          })(r, c);
+        }
+      }
+    }
+
+    var bottomOffset = sRows.length ? sRows.length * 250 + 20 : 0;
+    var bottomArea = el('div', 'drawer-bottom', scroll);
+    bottomArea.style.position = 'absolute';
+    bottomArea.style.top = bottomOffset + 'px';
+    bottomArea.style.left = '0';
+    bottomArea.style.width = '100%';
+
     drawerItems = [];
     for (var i = 0; i < inputs.length; i++) {
       var x = inputs[i];
@@ -537,10 +622,10 @@
     for (var k = 0; k < n; k++) {
       if (k === drawerInputs && k > 0) {
         xPos += groupGap - gap;
-        el('div', 'row-title', d, tr('Shortcuts')).style.left = (xPos + 4) + 'px';
+        el('div', 'row-title', bottomArea, tr('Shortcuts')).style.left = (xPos + 4) + 'px';
       }
-      if (k === 0 && drawerInputs) el('div', 'row-title', d, tr('Inputs')).style.left = '84px';
-      var item = drawerItems[k], key = el('div', 'key glass' + (item.off ? ' off' : ''), d);
+      if (k === 0 && drawerInputs) el('div', 'row-title', bottomArea, tr('Inputs')).style.left = '84px';
+      var item = drawerItems[k], key = el('div', 'key glass' + (item.off ? ' off' : ''), bottomArea);
       key.style.left = xPos + 'px';
       key.style.width = tw + 'px';
       sym(item.symbol, key);
@@ -548,25 +633,25 @@
       hover(key, Z.DRAWER, k);
       xPos += tw + gap;
     }
-    renderPanels();
+    renderPanels(bottomArea);
     updateFocus();
   }
 
-  function renderPanels() {
-    var d = $('drawer');
-    var old = d.querySelectorAll('.panel');
-    for (var o = 0; o < old.length; o++) d.removeChild(old[o]);
+  function renderPanels(parent) {
+    var p = parent || $('drawer');
+    var old = p.querySelectorAll('.panel');
+    for (var o = 0; o < old.length; o++) p.removeChild(old[o]);
     var wx = Prefs.weather(), coins = Data.activeCoins(), qt = coins.length > 0;
     var split = 80 + 1760 * 0.585;
     if (wx) {
-      var w = el('div', 'panel glass', d);
+      var w = el('div', 'panel glass', p);
       w.id = 'weather';
       w.style.left = '80px';
       w.style.width = ((qt ? split - 16 : 1840) - 80) + 'px';
       renderWeather(w);
     }
     if (qt) {
-      var q = el('div', 'panel glass', d);
+      var q = el('div', 'panel glass', p);
       q.id = 'prices';
       var left = wx ? split + 16 : 80;
       q.style.left = left + 'px';
@@ -618,17 +703,22 @@
   }
 
   function openDrawer() {
-    if (!drawerItems.length) return;
-    var tiles = $('tiles').children;
-    st.zone = Z.DRAWER;
-    st.drawer = Math.min(drawerItems.length - 1, nearest(document.querySelectorAll('#drawer .key'), centerX(tiles[st.shelf])));
+    st.drawerOpen = true;
+    var sRows = Data.serviceRows ? Data.serviceRows() : [];
+    if (sRows.length) {
+      st.zone = Z.ROWS;
+      st.streamRow = 0;
+      st.streamCol = 0;
+    } else {
+      st.zone = Z.DRAWER;
+      st.drawer = 0;
+    }
     updateFocus();
   }
 
   function closeDrawer() {
-    var keys = document.querySelectorAll('#drawer .key');
+    st.drawerOpen = false;
     st.zone = Z.SHELF;
-    if (shelf.length) st.shelf = nearest($('tiles').children, centerX(keys[st.drawer]));
     updateFocus();
   }
 
@@ -884,6 +974,14 @@
       case Z.SHELF:
         if (shelf[st.shelf]) launcher(shelf[st.shelf].id, shelf[st.shelf].title)();
         return;
+      case Z.ROWS:
+        var sRows = Data.serviceRows ? Data.serviceRows() : [];
+        if (sRows[st.streamRow]) {
+          var rItem = sRows[st.streamRow].items[st.streamCol];
+          var appObj = sRows[st.streamRow].app || (rItem && Data.appFor(rItem.app));
+          if (appObj) launcher(appObj.id, appObj.title)();
+        }
+        return;
       case Z.DRAWER:
         if (drawerItems[st.drawer]) drawerItems[st.drawer].run();
         return;
@@ -913,8 +1011,30 @@
     switch (st.zone) {
       case Z.SHELF:
         if (dx) st.shelf = Math.max(0, Math.min(shelf.length - 1, st.shelf + dx));
-        else if (dy > 0) { openDrawer(); return; }
+        else if (dy > 0) {
+          if (!st.drawerOpen) {
+            openDrawer();
+            return;
+          }
+          var sRows = Data.serviceRows ? Data.serviceRows() : [];
+          if (sRows.length) {
+            st.zone = Z.ROWS;
+            st.streamRow = 0;
+            var firstRowItems = sRows[0].items || [];
+            st.streamCol = Math.min(st.rowCols[0] || 0, Math.max(0, firstRowItems.length - 1));
+          } else {
+            st.zone = Z.DRAWER;
+            st.drawer = 0;
+          }
+        }
         else if (dy < 0) {
+          if (st.drawerOpen) {
+            closeDrawer();
+            st.zone = cards.length ? Z.CARDS : Z.TOP;
+            st.card = 0;
+            updateFocus();
+            return;
+          }
           if (cards.length) { st.zone = Z.CARDS; st.card = nearest(cardNodes, centerX(tiles[st.shelf])); }
           else { st.zone = Z.TOP; st.top = st.tab; }
         }
@@ -933,9 +1053,45 @@
           else st.zone = Z.SHELF;
         }
         break;
+      case Z.ROWS:
+        var sRows = Data.serviceRows ? Data.serviceRows() : [];
+        var curRow = sRows[st.streamRow];
+        var curItems = curRow ? curRow.items : [];
+        if (dx) {
+          st.streamCol = Math.max(0, Math.min(curItems.length - 1, st.streamCol + dx));
+          st.rowCols[st.streamRow] = st.streamCol;
+        } else if (dy > 0) {
+          if (st.streamRow < sRows.length - 1) {
+            st.streamRow++;
+            var nextItems = sRows[st.streamRow].items || [];
+            st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, nextItems.length - 1));
+          } else {
+            st.zone = Z.DRAWER;
+            st.drawer = 0;
+          }
+        } else if (dy < 0) {
+          if (st.streamRow > 0) {
+            st.streamRow--;
+            var prevItems = sRows[st.streamRow].items || [];
+            st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, prevItems.length - 1));
+          } else {
+            st.zone = Z.SHELF;
+          }
+        }
+        break;
       case Z.DRAWER:
         if (dx) st.drawer = Math.max(0, Math.min(drawerItems.length - 1, st.drawer + dx));
-        else if (dy < 0) { closeDrawer(); return; }
+        else if (dy < 0) {
+          var sRows = Data.serviceRows ? Data.serviceRows() : [];
+          if (sRows.length) {
+            st.zone = Z.ROWS;
+            st.streamRow = sRows.length - 1;
+            var lastRowItems = sRows[st.streamRow].items || [];
+            st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, lastRowItems.length - 1));
+          } else {
+            st.zone = Z.SHELF;
+          }
+        }
         break;
       case Z.APPS:
         var g = st.grid + dx + dy * 5;
@@ -963,7 +1119,7 @@
     if (st.zone === Z.EDIT) { setClass($('shelfedit'), 'open', false); openSettings(); st.row = rowsNow.length - 2; updateFocus(); return; }
     if (st.zone === Z.LANG) { closeLanguages(false); return; }
     if (sheetOpen()) { closeSheets(); return; }
-    if (st.zone === Z.DRAWER) { closeDrawer(); return; }
+    if (st.drawerOpen) { closeDrawer(); return; }
     if (st.zone !== Z.SHELF && shelf.length) { st.zone = Z.SHELF; updateFocus(); return; }
     TV.back();
   }
@@ -972,9 +1128,7 @@
   function hover(node, zone, index) {
     node.onmouseover = function () {
       if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG))) return;
-      if (zone === Z.DRAWER && st.zone !== Z.DRAWER) return;
-      if (zone !== Z.DRAWER && st.zone === Z.DRAWER && zone !== Z.SHELF) return;
-      if (zone === Z.SHELF && st.zone === Z.DRAWER) closeDrawer();
+      if (zone === Z.DRAWER && !st.drawerOpen) return;
       st.zone = zone;
       if (zone === Z.TOP) { st.top = index; if (index < 3) selectTab(index); }
       else if (zone === Z.CARDS) st.card = index;
@@ -1136,7 +1290,7 @@
   Data.onChange(function () {
     renderQuotes();
     renderCards();
-    renderPanels();
+    renderDrawer();
     checkNight();
   });
 
@@ -1148,6 +1302,61 @@
   }
 
   window.addEventListener('resize', fit);
+  window.addEventListener('wheel', function (e) {
+    if (saverOn || sheetOpen()) return;
+    if (e.deltaY > 20) {
+      if (!st.drawerOpen) {
+        openDrawer();
+      } else if (st.zone === Z.SHELF) {
+        var sRows = Data.serviceRows ? Data.serviceRows() : [];
+        if (sRows.length) {
+          st.zone = Z.ROWS;
+          st.streamRow = 0;
+          st.streamCol = 0;
+        } else {
+          st.zone = Z.DRAWER;
+          st.drawer = 0;
+        }
+        updateFocus();
+      } else if (st.zone === Z.ROWS) {
+        var sRows2 = Data.serviceRows ? Data.serviceRows() : [];
+        if (st.streamRow < sRows2.length - 1) {
+          st.streamRow++;
+          var nextItems = sRows2[st.streamRow].items || [];
+          st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, nextItems.length - 1));
+        } else {
+          st.zone = Z.DRAWER;
+          st.drawer = 0;
+        }
+        updateFocus();
+      }
+    } else if (e.deltaY < -20) {
+      if (st.zone === Z.DRAWER) {
+        var sRows3 = Data.serviceRows ? Data.serviceRows() : [];
+        if (sRows3.length) {
+          st.zone = Z.ROWS;
+          st.streamRow = sRows3.length - 1;
+          var lastItems = sRows3[st.streamRow].items || [];
+          st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, lastItems.length - 1));
+        } else {
+          st.zone = Z.SHELF;
+        }
+        updateFocus();
+      } else if (st.zone === Z.ROWS) {
+        var sRows4 = Data.serviceRows ? Data.serviceRows() : [];
+        if (st.streamRow > 0 && sRows4[st.streamRow]) {
+          st.streamRow--;
+          var prevItems = sRows4[st.streamRow].items || [];
+          st.streamCol = Math.min(st.rowCols[st.streamRow] || 0, Math.max(0, prevItems.length - 1));
+        } else {
+          st.zone = Z.SHELF;
+        }
+        updateFocus();
+      } else if (st.zone === Z.SHELF && st.drawerOpen) {
+        closeDrawer();
+      }
+    }
+  }, false);
   document.addEventListener('webOSRelaunch', reopened);   // LG: opened again while running
   window.addEventListener('appcontrol', reopened);        // Samsung: the same
   document.addEventListener('visibilitychange', function () {
@@ -1166,13 +1375,14 @@
   loadApps(function () {
     renderAll();
     Data.refresh();
+    if (location.search.indexOf('drawer=open') >= 0) openDrawer();
   });
   setInterval(function () {
     checkNight();
     Data.refresh();
     if (!saverOn && !sheetOpen() && Date.now() - idleAt > SAVER_AFTER) showSaver();
     if (saverOn) tickSaverClock($('saver').querySelector('.clock'));
-  }, 30000);
+  }, 60000);
 
   // For the browser preview and tests.
   window.FreeMyTV = {state: st, move: move, activate: activate, back: back, showSaver: showSaver, hideSaver: hideSaver, toast: toast};

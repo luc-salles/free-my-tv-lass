@@ -106,15 +106,16 @@ var TV = (function () {
 
   // Not shown among Samsung's apps: Smart Hub's own pieces, the platform's tools and players (but its browser,
   // Netflix and Prime Video, which live there too), services, keyboards and ad players. The rest is what Smart Hub shows.
-  // Tizen 4 also lists Samsung's own pieces: the YouTube engine's hosts (cobalt-*: "App", "Youtube", "YoutubeTV"),
-  // Bixby, search, previews, the weather and notification popups, Apple TV's stand-in and engine.
-  // A 2020 TU8000 (Tizen 5.5) ships Prime Video as org.tizen.primevideo, next to a -dummy and a _companionapp.
-  // A 2023 Q60C (Tizen 9 in Brazil) ships Globoplay as org.tizen.globoplayapp.
+  // Tizen 4-9 also list Samsung's internal diagnostic, promotion and system UI tools: CoBA, AmbientFTE, AdPlayer,
+  // Bixby, Autofill, ChannelManager, StorageShare, buds-easy-connector, multiple dummy "Setting" apps, etc.
   var SAMSUNG_HIDDEN = new RegExp('^(org\\.volt\\.|org\\.tizen\\.(?!browser$|netflix|primevideo$|globoplay)|org\\.tizen\\.netflixlowmem$|ise-|ug-|d75857a5-)' +
       '|[Ss]ervice$|[Dd]aemon|Preview$|syspopup|[Hh]elper$|AdPlayer|AdSuite|[Kk]eyboard|\\.OTApp$' +
+      '|coba|soundbar|storageshare|tgagent|cinemagraph|autofill|appinfo' +
       '|^com\\.samsung\\.(calendar-account-manager|tv\\.(cobalt-|aria-(dummy|engine)|airplay-app|ambient-support|' +
       'built-in-app-info-viewer|commonsearch|searchall|preview-|tv-scheduler|csfs|notification-app|mycontents|' +
-      'safLaunchBridge|shortcut|remote-workspace|voiceassistant|mybixby|weather-viewer))');
+      'safLaunchBridge|shortcut|remote-workspace|voiceassistant|mybixby|weather-viewer))', 'i');
+
+  var SAMSUNG_HIDDEN_NAME = new RegExp('^(coba[- ]|ambientfte|appinfoviewer|autofillapp|bixby|buds-easy|channel(list|manager)|cinemagraph|remoteworkspace|resourcenetwork|safcommon|samsung (easy support|promotion|remote key)|samsungdex|sdm|securitycenter|self diagnosis|^setting$|smartthingspartial|soundbaroobe|storageshare|tgagent|tsi qr|tizen$|tvdevicecare|user guide|adplayer|adsuite|keyboard)', 'i');
 
   // Samsung apps whose iconPath is Tizen's generic pinwheel (a valid image, so onerror never fires): our own icons.
   // Seen on a 2018 NU7675 (Tizen 4); Smart Hub draws their real icons from a folder apps can't read. On a 2017
@@ -208,12 +209,17 @@ var TV = (function () {
         var ids = ((window.CONFIG || {}).shelfApps || []).filter(function (w) { return w.indexOf('.') > 0; });
         for (var i = 0; i < list.length; i++) {
           var a = list[i];
-          if (!a.id || a.id === self || SAMSUNG_HIDDEN.test(a.id) || (a.show === false && ids.indexOf(a.id) < 0)) continue;
-          out.push(samsungApp(a));
+          if (!a.id || a.id === self || SAMSUNG_HIDDEN.test(a.id) || SAMSUNG_HIDDEN_NAME.test(a.name || '') || (a.show === false && ids.indexOf(a.id) < 0)) continue;
+          var item = samsungApp(a);
+          if (SAMSUNG_HIDDEN_NAME.test(item.title || '')) continue;
+          out.push(item);
         }
         ids.forEach(function (id) {
           if (out.some(function (x) { return x.id === id; })) return;
-          try { out.push(samsungApp(window.tizen.application.getAppInfo(id))); } catch (e) {}
+          try {
+            var extra = samsungApp(window.tizen.application.getAppInfo(id));
+            if (!SAMSUNG_HIDDEN.test(extra.id) && !SAMSUNG_HIDDEN_NAME.test(extra.title || '')) out.push(extra);
+          } catch (e) {}
         });
         // The built-in Netflix stays only when the store's Netflix isn't installed.
         var store = out.some(function (x) { return /\.Netflix$/.test(x.id); });
@@ -285,7 +291,13 @@ var TV = (function () {
 
   function samsungInputs(done) {
     var list = [{id: 'source:TV:1', key: 'live', label: null, symbol: 'live_tv', connected: true}];
-    for (var n = 1; n <= 4; n++) list.push({id: 'source:HDMI:' + n, key: 'hdmi' + n, label: 'HDMI ' + n, symbol: 'hdmi', connected: true});
+    for (var n = 1; n <= 4; n++) {
+      var custom = '';
+      try { custom = (localStorage.getItem('fmtv.input.hdmi' + n) || '').toLowerCase(); } catch (e) {}
+      var symName = custom === 'xbox' || custom === 'game' || custom === 'ps' || custom === 'switch' ? 'gamepad' : 'hdmi';
+      var lbl = custom === 'xbox' ? 'Xbox' : custom === 'ps' ? 'PlayStation' : custom === 'switch' ? 'Switch' : custom === 'pc' ? 'PC' : 'HDMI ' + n;
+      list.push({id: 'source:HDMI:' + n, key: 'hdmi' + n, label: lbl, symbol: symName, connected: true});
+    }
     samsungSources(function (sources) {
       if (sources) {
         for (var i = 1; i < list.length; i++) list[i].connected = false;
